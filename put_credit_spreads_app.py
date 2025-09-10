@@ -1,10 +1,3 @@
-# Create a ready-to-deploy GitHub-style project for Streamlit Cloud
-import os, textwrap, json, pandas as pd
-
-project_dir = "/mnt/data/put-credit-spreads-app"
-os.makedirs(project_dir, exist_ok=True)
-
-app_py = r'''
 # put_credit_spreads_app.py
 # Streamlit app to screen weekly/biweekly Put Credit Spreads with ≥65% POP, avoiding earnings & ex-div when possible.
 # Data: Yahoo Finance via yfinance (free); optional calendars via FMP/Finnhub if you add free keys in Streamlit Secrets.
@@ -361,27 +354,3 @@ st.markdown("""
 - **APIs**: Price/chain via `yfinance` (Yahoo Finance). Optional calendars via FMP and/or Finnhub if keys are supplied.
 - **Disclaimer**: Educational only. Double-check data in your broker before trading.
 """)
-'''
-
-requirements_txt = """streamlit
-yfinance
-pandas
-numpy
-requests
-"""
-
-readme_md = """# Put Credit Spread Finder (Streamlit)
-
-A Streamlit app that screens **weekly / biweekly** put credit spreads with a **≥ 65% POP** target, and optionally avoids **earnings** and **ex-dividend** dates using free APIs.
-
-## Deploy to Streamlit Cloud (from GitHub)
-1. Create a new GitHub repo and add:
-   - `put_credit_spreads_app.py`
-   - `requirements.txt`
-   - (optional) `README.md`
-2. On [share.streamlit.io](https://share.streamlit.io) → **New app**, select your repo.
-3. **Main file**: `put_credit_spreads_app.py`
-4. (Optional) **Secrets** → add:
-   ```toml
-   FMP_KEY = "YOUR_FMP_KEY"
-   FINNHUB_KEY = "YOUR_FINNHUB_KEY"
