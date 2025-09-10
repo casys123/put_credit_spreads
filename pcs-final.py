@@ -1,17 +1,17 @@
-# Create an upgraded Streamlit app with more controls, liquidity filters, IV proxies, and better suggestions
-from datetime import datetime
-import os, textwrap
-
-improved_code = r'''
-# put_credit_spreads_app.py — v2 (Enhanced)
-# Improvements:
-# - Configurable delta band
-# - Liquidity filters (min OI, min volume, max bid-ask %)
-# - Better IV proxy (near-ATM blended IV) + IV Percentile (proxy) over last 60 sessions using HV as fallback
-# - Upload tickers via CSV or paste list
-# - Optional export of "trade plan" with entry/exit guidance
-# - Per‑ticker details in expanders (top candidates by ROI/POP)
-# - Robust error handling & caching
+# pcs-final.py — Put Credit Spreads (Enhanced, GitHub/Streamlit-Cloud ready)
+# - Weekly/biweekly PCS scanner with ≥65% POP target
+# - Configurable delta band, liquidity filters (OI/Vol/Spread%)
+# - IV proxy (near-ATM blended), IV percentile proxy (vs ~60d HV)
+# - Upload tickers (CSV/TXT) or paste list
+# - Avoid earnings / ex-div windows (optional FMP/Finnhub keys via Secrets)
+# - Exports results & trade plan (in-memory downloads)
+#
+# Deploy on Streamlit Cloud: set main file to pcs-final.py and add requirements:
+#   streamlit
+#   yfinance
+#   pandas
+#   numpy
+#   requests
 
 import io
 import math
@@ -24,9 +24,8 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(page_title="Put Credit Spread Finder (Enhanced)", layout="wide")
-
 st.title("📉 Put Credit Spread Finder — Enhanced (Weekly/Biweekly)")
-st.caption("Targets ≥ 65% POP, adds liquidity filters, IV proxy & percentile, uploadable tickers, and trade‑plan exports. Data via Yahoo (yfinance); optional calendars via FMP/Finnhub.")
+st.caption("Targets ≥ 65% POP, adds liquidity filters, IV proxy & percentile, uploadable tickers, and trade-plan exports. Data via Yahoo (yfinance); optional calendars via FMP/Finnhub.")
 
 # ------------------------------
 # Helpers
@@ -35,21 +34,22 @@ st.caption("Targets ≥ 65% POP, adds liquidity filters, IV proxy & percentile, 
 def parse_tickers_text(raw: str):
     if not raw:
         return []
-    parts = [p.strip().upper() for p in raw.replace("\\n", ",").replace(" ", ",").split(",")]
+    parts = [p.strip().upper() for p in raw.replace("\n", ",").replace(" ", ",").split(",")]
     return sorted(list({p for p in parts if p}))
 
 def parse_ticker_file(file) -> list:
     try:
-        if file.name.lower().endswith(".csv"):
+        name = (file.name or "").lower()
+        if name.endswith(".csv"):
             df = pd.read_csv(file)
+            # try to find a sensible column
             col = [c for c in df.columns if "symbol" in c.lower() or "ticker" in c.lower()]
             if col:
                 vals = df[col[0]].astype(str).tolist()
             else:
-                # assume single column of tickers
-                vals = df.iloc[:,0].astype(str).tolist()
+                vals = df.iloc[:, 0].astype(str).tolist()
             return sorted(list({v.strip().upper() for v in vals if isinstance(v, str) and v.strip()}))
-        elif file.name.lower().endswith(".txt"):
+        elif name.endswith(".txt"):
             txt = file.read().decode("utf-8", errors="ignore")
             return parse_tickers_text(txt)
     except Exception:
@@ -115,12 +115,24 @@ def expected_move_from_chain(chain_calls: pd.DataFrame, chain_puts: pd.DataFrame
     try:
         c = calls.sort_values("dist").iloc[0]
         p = puts.sort_values("dist").iloc[0]
+
         def mid_or_last(row):
-            bid = row.get("bid", float("nan")); ask = row.get("ask", float("nan")); last = row.get("lastPrice", float("nan"))
-            if pd.notna(bid) and pd.notna(ask):
+            bid = row.get("bid", float("nan"))
+            ask = row.get("ask", float("nan"))
+            last = row.get("lastPrice", float("nan"))
+            if pd.notna(bid) and pd.notna(ask) and ask >= bid and bid > 0:
                 return (bid + ask) / 2
-            return last
-        cpx = mid_or_last(c); ppx = mid_or_last(p)
+            # fallback
+            if pd.notna(last):
+                return last
+            if pd.notna(bid):
+                return bid
+            if pd.notna(ask):
+                return ask
+            return float("nan")
+
+        cpx = mid_or_last(c)
+        ppx = mid_or_last(p)
         if pd.isna(cpx) or pd.isna(ppx):
             return float("nan")
         return 0.85 * (cpx + ppx)
@@ -194,10 +206,14 @@ def iv_percentile_proxy(series: pd.Series, value: float) -> float:
         return float("nan")
 
 def bid_ask_spread_pct(bid: float, ask: float) -> float:
-    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
         return float("inf")
-    mid = 0.5*(bid+ask)
-    return (ask - bid) / mid if mid > 0 else float("inf")
+    # If ask < bid (stale quote), still compute spread on absolute terms
+    if ask < bid:
+        mid = 0.5*(bid + ask) if (bid + ask) > 0 else bid
+    else:
+        mid = 0.5*(bid + ask)
+    return (abs(ask - bid) / mid) if mid > 0 else float("inf")
 
 # ------------------------------
 # Sidebar & inputs
@@ -219,17 +235,17 @@ with st.sidebar:
     st.header("Liquidity Filters")
     min_oi = st.number_input("Min Open Interest (short & long)", 0, 5000, 50, 10)
     min_vol = st.number_input("Min Today Volume (short & long)", 0, 5000, 0, 10)
-    max_spread_pct = st.number_input("Max bid‑ask width (% of mid)", 1, 100, 25, 1)
+    max_spread_pct = st.number_input("Max bid-ask width (% of mid)", 1, 100, 25, 1)
 
     st.header("Risk & Calendars")
     avoid_earnings = st.checkbox("Avoid earnings during holding window", True)
-    avoid_exdiv = st.checkbox("Avoid ex‑dividend during holding window", True)
+    avoid_exdiv = st.checkbox("Avoid ex-dividend during holding window", True)
     use_mid_prices = st.checkbox("Use mid prices (bid/ask midpoint)", True)
-    risk_free = st.number_input("Risk‑free rate (annualized)", 0.0, 0.10, 0.03, 0.005, format="%.3f")
+    risk_free = st.number_input("Risk-free rate (annualized)", 0.0, 0.10, 0.03, 0.005, format="%.3f")
 
     st.header("Optional Secrets")
     st.caption("Add in Streamlit Cloud → Settings → Secrets")
- st.code("""
+    st.code("""
 FMP_KEY = "YOUR_FMP_KEY"
 FINNHUB_KEY = "YOUR_FINNHUB_KEY"
 """)
@@ -246,7 +262,7 @@ FINNHUB_KEY = get_secret("FINNHUB_KEY", "")
 # Core scanner
 # ------------------------------
 
-def find_spreads_for_ticker(ticker: str):
+def scan_one_ticker(ticker: str):
     out = {"rows": [], "detail": {}}
     try:
         hist = get_hist(ticker, "1y")
@@ -265,7 +281,7 @@ def find_spreads_for_ticker(ticker: str):
         except Exception:
             expirations = []
 
-        # map windows
+        # map DTE windows
         ranges = []
         if "7-10" in dte_choices: ranges.append((7,10))
         if "12-16" in dte_choices: ranges.append((12,16))
@@ -274,11 +290,13 @@ def find_spreads_for_ticker(ticker: str):
         next_earn = fmp_next_earnings(ticker, FMP_KEY) or finnhub_next_earnings(ticker, FINNHUB_KEY)
         next_exdiv = fmp_next_exdiv(ticker, FMP_KEY)
 
-        # keep some per‑ticker context
         best = []
 
-        for exp in expirations:
-            edate = pd.to_datetime(exp).date()
+        for exp in expirations or []:
+            try:
+                edate = pd.to_datetime(exp).date()
+            except Exception:
+                continue
             dte = (edate - today).days
             if not any(lo <= dte <= hi for lo,hi in ranges):
                 continue
@@ -292,25 +310,26 @@ def find_spreads_for_ticker(ticker: str):
             iv_now = iv_proxy_from_chain(calls, puts, spot)
             exp_move = expected_move_from_chain(calls, puts, spot)
 
-            # IV percentile proxy using RV history as fallback (not perfect but indicative)
             hv_series = hist["Close"].pct_change().rolling(20).std()*(252**0.5)
-            ivp = iv_percentile_proxy(hv_series, iv_now)  # proxy
+            ivp = iv_percentile_proxy(hv_series, iv_now)  # proxy only
 
-            # scan puts
+            # iterate puts for short leg
             for _, row in puts.iterrows():
                 try:
                     K = float(row["strike"])
                     if K >= spot:
                         continue
+
                     iv = float(row.get("impliedVolatility", float("nan")))
                     if not np.isfinite(iv) or iv <= 0:
                         continue
+
                     T = max(dte/365.0, 1e-6)
                     delta = bs_put_delta(spot, K, T, risk_free, iv)
                     if not np.isfinite(delta) or delta < delta_min or delta > delta_max:
                         continue
 
-                    # Liquidity
+                    # Liquidity (short)
                     sbid, sask = float(row.get("bid", np.nan)), float(row.get("ask", np.nan))
                     soi = int(row.get("openInterest", 0)); svol = int(row.get("volume", 0))
                     if any(pd.isna(x) for x in [sbid, sask]) or soi < min_oi or svol < min_vol:
@@ -318,6 +337,7 @@ def find_spreads_for_ticker(ticker: str):
                     if bid_ask_spread_pct(sbid, sask) * 100 > max_spread_pct:
                         continue
 
+                    # pick long leg below within width
                     below = puts[(puts["strike"] < K) & (puts["strike"] >= K - max_width)]
                     if below.empty:
                         continue
@@ -330,9 +350,14 @@ def find_spreads_for_ticker(ticker: str):
                     if bid_ask_spread_pct(lbid, lask) * 100 > max_spread_pct:
                         continue
 
-                    credit = ( (sbid + sask)/2 - (lbid + lask)/2 ) if use_mid_prices else (sbid - lask)
+                    # credit calculation
+                    if use_mid_prices and (sask >= sbid > 0) and (lask >= lbid > 0):
+                        credit = ( (sbid + sask)/2 - (lbid + lask)/2 )
+                    else:
+                        credit = (sbid - lask)
                     if credit < min_credit:
                         continue
+
                     width = K - L
                     max_loss = width - credit
                     if max_loss <= 0:
@@ -350,7 +375,7 @@ def find_spreads_for_ticker(ticker: str):
                     if avoid_exdiv and next_exdiv and (today <= next_exdiv <= edate):
                         avoid_note.append("ex-div")
 
-                    open_hint = "Today" if (np.isfinite(iv_now) and np.isfinite(rv20) and iv_now > rv20 and 40 <= rsi14 <= 65) else "Wait for higher IV / better pullback"
+                    open_hint = "Today" if (np.isfinite(iv_now) and np.isfinite(rv20) and iv_now > rv20 and 40 <= rsi14 <= 65) else "Wait for higher IV / pullback"
                     close_hint = (edate - timedelta(days=3)).isoformat() + (" (≈ 3 DTE)" + (" or 50% profit" if manage_early else ""))
 
                     rowd = {
@@ -366,18 +391,19 @@ def find_spreads_for_ticker(ticker: str):
                     }
                     out["rows"].append(rowd)
                     best.append(rowd)
+
                 except Exception:
                     continue
 
-        # keep top 5 by ROI then POP
         out["detail"]["best"] = sorted(best, key=lambda x: (x["Avoid"]!="", -x["ROI"], -x["POP"]))[:5]
-        out["detail"]["context"] = {
-            "rv20": rv20, "rsi14": rsi14, "trend": trend
-        }
+        out["detail"]["context"] = {"rv20": rv20, "rsi14": rsi14, "trend": trend}
         return out
+
     except Exception:
         return out
 
+# Run scan
+symbols = symbols or []
 rows = []
 per_ticker = {}
 
@@ -386,7 +412,7 @@ if not symbols:
 else:
     progress = st.progress(0.0, text="Scanning…")
     for i, sym in enumerate(symbols, start=1):
-        res = find_spreads_for_ticker(sym)
+        res = scan_one_ticker(sym)
         rows.extend(res["rows"])
         per_ticker[sym] = res["detail"]
         progress.progress(i/len(symbols), text=f"{i}/{len(symbols)} processed")
@@ -395,7 +421,7 @@ df = pd.DataFrame(rows)
 if df.empty:
     st.warning("No candidates met your filters. Try widening strikes, lowering POP threshold, relaxing liquidity filters, or disabling some avoid rules.")
 else:
-    # pretty table
+    # Pretty table
     fmt = df.copy()
     for c in ["Credit","MaxLoss"]:
         fmt[c] = fmt[c].map(lambda x: f"${x:,.2f}")
@@ -404,26 +430,36 @@ else:
     cols = ["Ticker","DTE","Expiry","Spot","ExpectedMove~","ShortK","LongK","Width","Credit","MaxLoss","ROI","POP","IV_used","IV_proxy","IVP_proxy","RV20","RSI14","Trend","Avoid","SuggestOpen","SuggestClose"]
     st.dataframe(fmt[cols], use_container_width=True, height=520)
 
-    # downloads
-    st.download_button("⬇️ Download CSV", data=df.to_csv(index=False).encode("utf-8"),
-                       file_name="put_credit_spreads_results.csv", mime="text/csv")
-    st.download_button("⬇️ Download JSON", data=df.to_json(orient="records").encode("utf-8"),
-                       file_name="put_credit_spreads_results.json", mime="application/json")
-
-    # trade plan export
+    # Downloads (in-memory)
+    st.download_button(
+        "⬇️ Download CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="put_credit_spreads_results.csv",
+        mime="text/csv",
+    )
+    st.download_button(
+        "⬇️ Download JSON",
+        data=df.to_json(orient="records").encode("utf-8"),
+        file_name="put_credit_spreads_results.json",
+        mime="application/json",
+    )
     plan_cols = ["Ticker","Expiry","ShortK","LongK","Width","Credit","MaxLoss","ROI","POP","SuggestOpen","SuggestClose","Avoid"]
     plan = df[plan_cols].sort_values(["Ticker","Expiry"])
-    st.download_button("📝 Download Trade Plan (CSV)", data=plan.to_csv(index=False).encode("utf-8"),
-                       file_name="trade_plan_put_spreads.csv", mime="text/csv")
+    st.download_button(
+        "📝 Download Trade Plan (CSV)",
+        data=plan.to_csv(index=False).encode("utf-8"),
+        file_name="trade_plan_put_spreads.csv",
+        mime="text/csv",
+    )
 
-# Per‑ticker detail
+# Per-ticker details
 if per_ticker:
     st.markdown("---")
-    st.subheader("Per‑Ticker Candidates")
+    st.subheader("Per-Ticker Candidates")
     for sym, det in per_ticker.items():
         with st.expander(f"{sym} — Top candidates & context"):
             ctx = det.get("context", {})
-            st.write({k: (round(v,3) if isinstance(v,(int,float)) else v) for k,v in ctx.items()})
+            st.write({k: (round(v,3) if isinstance(v,(int,float)) and pd.notna(v) else v) for k,v in ctx.items()})
             best = pd.DataFrame(det.get("best", []))
             if not best.empty:
                 show = best.copy()
@@ -432,21 +468,17 @@ if per_ticker:
                 for c in ["ROI","POP","IV_used","IV_proxy","IVP_proxy"]:
                     if c in show.columns:
                         show[c] = show[c].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
-                st.dataframe(show[["Ticker","DTE","Expiry","ShortK","LongK","Width","Credit","ROI","POP","IV_proxy","IVP_proxy","Avoid","SuggestOpen","SuggestClose"]], use_container_width=True)
+                st.dataframe(
+                    show[["Ticker","DTE","Expiry","ShortK","LongK","Width","Credit","ROI","POP","IV_proxy","IVP_proxy","Avoid","SuggestOpen","SuggestClose"]],
+                    use_container_width=True
+                )
 
 st.markdown("---")
 st.subheader("Notes & Methodology")
 st.markdown("""
-**POP** uses a lognormal model vs. **breakeven** (short strike − credit) and the short‑leg IV. **Delta band** selects OTM puts with a probability tilt (more negative delta ≈ more premium, less probability).  
-**IV Proxy** blends near‑ATM option IVs; **IV Percentile (proxy)** compares that to the past ~60 trading sessions' 20‑day HV as a rough gauge (not true IVR).  
+**POP** uses a lognormal model vs. **breakeven** (short strike − credit) and the short-leg IV. **Delta band** selects OTM puts with a probability tilt (more negative delta ≈ more premium, less probability).  
+**IV Proxy** blends near-ATM option IVs; **IV Percentile (proxy)** compares that to the past ~60 trading sessions' 20-day HV as a rough gauge (not true IVR).  
 **Timing**: Favor entries when **IV_proxy > RV20** and **RSI ~40–65** in an **uptrend**; plan exits **~3 DTE** or at **50% profit** to curb gamma risk.  
-**Liquidity filters** attempt to reduce slippage/assignment headaches by enforcing **OI/Volume** minimums and a **max bid‑ask %** on both legs.  
-Data are best‑effort & for education—always verify in your broker.
+**Liquidity filters** attempt to reduce slippage/assignment headaches by enforcing **OI/Volume** minimums and a **max bid-ask %** on both legs.  
+Data are best-effort & educational—always verify in your broker before trading.
 """)
-'''
-
-path = "/mnt/data/put_credit_spreads_app_v2.py"
-with open(path, "w") as f:
-    f.write(improved_code)
-
-path
