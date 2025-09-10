@@ -370,8 +370,7 @@ numpy
 requests
 """
 
-readme_md = """
-# Put Credit Spread Finder (Streamlit)
+readme_md = """# Put Credit Spread Finder (Streamlit)
 
 A Streamlit app that screens **weekly / biweekly** put credit spreads with a **≥ 65% POP** target, and optionally avoids **earnings** and **ex-dividend** dates using free APIs.
 
