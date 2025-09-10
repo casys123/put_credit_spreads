@@ -229,9 +229,10 @@ with st.sidebar:
 
     st.header("Optional Secrets")
     st.caption("Add in Streamlit Cloud → Settings → Secrets")
-   st.code("FMP_KEY = \"YOUR_FMP_KEY\"\nFINNHUB_KEY = \"YOUR_FINNHUB_KEY\"")
-
-FINNHUB_KEY = "YOUR_FINNHUB_KEY"''')
+ st.code("""
+FMP_KEY = "YOUR_FMP_KEY"
+FINNHUB_KEY = "YOUR_FINNHUB_KEY"
+""")
 
 # Ticker universe
 symbols = parse_tickers_text(tickers_text)
