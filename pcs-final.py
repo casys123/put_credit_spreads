@@ -1,8 +1,3 @@
-# Create an updated version of the app that shows the requested columns
-from datetime import datetime
-import os, textwrap
-
-code = r'''
 # pcs-final-columns.py — Put Credit Spreads with requested columns
 # Adds table columns:
 # Symbol | Price~ | Exp Date | Short | Bid1 | Long | Ask2 | BE | BE% | Max Profit | Max Loss | Max Profit% | Risk/Reward | IV Rank | Loss Prob | Links
@@ -230,7 +225,9 @@ def scan_one(ticker: str):
                     iv_rank_disp = (ivp * 100.0) if np.isfinite(ivp) else None
 
                     # links (Yahoo + Barchart)
-                    yurl = f"https://finance.yahoo.com/quote/{ticker}/options?date="  # Yahoo needs UNIX expiry; leaving base
+                    # Convert expiration date to Unix timestamp for Yahoo URL
+                    exp_timestamp = int(datetime.combine(edate, datetime.min.time()).timestamp())
+                    yurl = f"https://finance.yahoo.com/quote/{ticker}/options?date={exp_timestamp}"
                     burl = f"https://www.barchart.com/stocks/quotes/{ticker}/options"
                     links = f"[Yahoo]({yurl}) | [Barchart]({burl})"
 
@@ -295,10 +292,3 @@ else:
 
 st.markdown("---")
 st.caption("Notes: BE% = (Breakeven/Spot − 1). Max Profit = net credit (uses mid-price when available). IV Rank is a proxy from near‑ATM IV vs ~60d HV.")
-'''
-
-path = "/mnt/data/pcs-final-columns.py"
-with open(path, "w") as f:
-    f.write(code)
-
-path
